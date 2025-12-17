@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AI Open Mouth View</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body { margin: 0; background-color: black; overflow: hidden; font-family: 'Arial', sans-serif; }
+        
+        /* 컨테이너 */
+        .container { position: relative; width: 100vw; height: 100vh; }
+
+        /* 비디오 (맨 뒤) */
+        video { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            object-fit: cover; transform: scaleX(-1); 
+            z-index: 1; 
+        }
+
+        /* 그림판 (중간) */
+        canvas { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            object-fit: cover; transform: scaleX(-1); 
+            z-index: 2; 
+        }
+
+        /* UI 레이어 (맨 앞) */
+        #ui-layer {
+            position: absolute; top: 30px; left: 50%; transform: translateX(-50%);
+            width: 85%; z-index: 3; text-align: center;
+        }
+        
+        .status-box {
+            background: rgba(0, 0, 0, 0.6); 
+            padding: 20px; 
+            border-radius: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            backdrop-filter: blur(4px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+
+        #main-text { font-size: 1.8rem; font-weight: 800; color: white; margin-bottom: 5px; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
+        #sub-text { font-size: 1rem; color: #ddd; margin-bottom: 8px; font-weight: 500; }
+        #data-text { font-family: 'Courier New', monospace; font-size: 0.85rem; color: #aaa; }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="ui-layer">
+            <div class="status-box" id="status-bg">
+                <div id="main-text">SYSTEM LOADING...</div>
+                <div id="sub-text">잠시만 기다려주세요</div>
+                <div id="data-text">AI Initializing...</div>
+            </div>
+        </div>
+
+        <video id="input_video" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const ctx = canvasElement.getContext('2d');
+        
+        const mainText = document.getElementById('main-text');
+        const subText = document.getElementById('sub-text');
+        const dataText = document.getElementById('data-text');
+        const statusBg = document.getElementById('status-bg');
+
+        function onResults(results) {
+            // [핵심 수정] 캔버스 크기를 화면 전체로 강제 고정 (파란 네모 성공 비결)
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            
+            ctx.save();
+            ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 비디오 그리기
+            ctx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+
+                // 좌표 변환 함수 (화면 크기 기준)
+                const getPoint = (index) => {
+                    return {
+                        x: landmarks[index].x * window.innerWidth,
+                        y: landmarks[index].y * window.innerHeight
+                    };
+                };
+
+                // 거리 계산
+                const dist = (i1, i2) => {
+                    const p1 = getPoint(i1);
+                    const p2 = getPoint(i2);
+                    return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+                };
+
+                // 데이터 계산
+                const mouthOpen = dist(13, 14); // 상순-하순
+                const faceHeight = dist(10, 152); // 이마-턱
+                const openRatio = (mouthOpen / faceHeight) * 100;
+
+                const leftDist = dist(1, 234); // 코-왼귀
+                const rightDist = dist(1, 454); // 코-오른귀
+                const yawRatio = leftDist / rightDist;
+
+                // 판정 로직
+                const isMouthOpen = openRatio > 7.0; // 기준값
+                const isCentered = yawRatio > 0.6 && yawRatio < 1.4;
+                const isReady = isMouthOpen && isCentered;
+
+                // UI 업데이트
+                dataText.innerText = `Mouth: ${openRatio.toFixed(1)}% | Yaw: ${yawRatio.toFixed(2)}`;
+                
+                let color = isReady ? '#00FF00' : '#FF0055'; // 초록 vs 빨강
+
+                if (isReady) {
+                    mainText.innerText = "촬영 가능 (READY)";
+                    mainText.style.color = "#00FF00";
+                    subText.innerText = "완벽한 포지션입니다.";
+                    statusBg.style.borderColor = "#00FF00";
+                } else {
+                    statusBg.style.borderColor = "#FF0055";
+                    mainText.style.color = "#FF0055";
+                    if (!isMouthOpen) {
+                        mainText.innerText = "입을 크게 벌리세요";
+                        subText.innerText = "Open Mouth Wider";
+                    } else {
+                        mainText.innerText = "정면을 보세요";
+                        subText.innerText = "Look Straight";
+                    }
+                }
+
+                // --- [시각화] 얼굴 위에 직접 그리기 ---
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = color;
+                ctx.fillStyle = color;
+
+                // 1. 십자선 (Alignment Guide)
+                const top = getPoint(10);
+                const bottom = getPoint(152);
+                const leftEye = getPoint(33);
+                const rightEye = getPoint(263);
+                const nose = getPoint(1);
+
+                ctx.beginPath();
+                ctx.moveTo(top.x, top.y); ctx.lineTo(bottom.x, bottom.y); // 세로선
+                ctx.moveTo(leftEye.x, leftEye.y); ctx.lineTo(rightEye.x, rightEye.y); // 가로선
+                ctx.stroke();
+
+                // 2. 코 끝 점
+                ctx.beginPath();
+                ctx.arc(nose.x, nose.y, 5, 0, 2 * Math.PI);
+                ctx.fill();
+
+                // 3. 입술 윤곽선 점찍기 (주요 포인트만)
+                const lipPoints = [61, 291, 13, 14]; 
+                lipPoints.forEach(idx => {
+                    const p = getPoint(idx);
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 3, 0, 2 * Math.PI);
+                    ctx.fill();
+                });
+
+            } else {
+                mainText.innerText = "얼굴 인식 중...";
+                mainText.style.color = "yellow";
+            }
+            ctx.restore();
+        }
+
+        const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        faceMesh.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await faceMesh.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
