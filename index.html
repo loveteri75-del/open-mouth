@@ -1,160 +1,374 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>AI C-Spine View</title>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    
-    <style>
-        body { margin: 0; background-color: black; overflow: hidden; font-family: sans-serif; }
-        
-        /* 1. 컨테이너: 화면 전체를 꽉 채움 */
-        .container { position: relative; width: 100vw; height: 100vh; }
-
-        /* 2. 비디오: 맨 뒤에 배치 */
-        video { 
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
-            object-fit: cover; /* 화면 꽉 차게 */
-            transform: scaleX(-1); /* 거울 모드 */
-            z-index: 0; 
-        }
-
-        /* 3. 투명 그림판: 비디오 바로 위에 덮음 */
-        canvas { 
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
-            object-fit: cover; transform: scaleX(-1);
-            z-index: 1; 
-            /* 디버깅용: 캔버스가 잘 덮였는지 확인하는 얇은 테두리 */
-            border: 2px solid rgba(0, 255, 255, 0.3);
-            box-sizing: border-box;
-        }
-
-        /* 4. 상태 메시지: 맨 앞에 띄움 */
-        #status-box {
-            position: absolute; top: 10%; left: 50%; transform: translateX(-50%);
-            width: 80%; text-align: center; z-index: 2;
-            background: rgba(0, 0, 0, 0.5); padding: 15px; border-radius: 15px;
-            color: white;
-        }
-        #main-msg { font-size: 1.5rem; font-weight: bold; display: block; margin-bottom: 5px; }
-        #debug-msg { font-size: 0.9rem; color: #aaa; }
-
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Open Mouth View · Contactless Guide</title>
+  <style>
+    :root { --pad: 14px; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0b0f14; color:#e9eef5; }
+    .wrap { display:flex; flex-direction:column; height:100svh; }
+    .topbar { padding: var(--pad); display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    .pill { padding:8px 10px; border-radius:999px; background:#141b24; border:1px solid #243142; font-size:13px; }
+    .main { flex:1; position:relative; overflow:hidden; }
+    video, canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+    .hud { position:absolute; left:12px; right:12px; bottom:12px; display:grid; gap:10px; }
+    .card { background:rgba(20,27,36,0.75); backdrop-filter: blur(8px);
+      border:1px solid rgba(36,49,66,0.9); border-radius:16px; padding:12px;
+    }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+    .kpi { display:flex; gap:10px; align-items:baseline; }
+    .kpi b { font-size:18px; }
+    .status { font-weight:900; }
+    .ok { color:#7CFFB2; }
+    .warn { color:#FFD27C; }
+    .bad { color:#FF7C7C; }
+    .btn { cursor:pointer; border:none; border-radius:12px; padding:10px 12px;
+      background:#2a6df5; color:white; font-weight:900;
+    }
+    .btn2 { background:#1b2330; border:1px solid #243142; }
+    .guide { position:absolute; top:70px; left:12px; right:12px; display:flex; justify-content:center; pointer-events:none; }
+    .guide span{
+      padding:10px 14px; border-radius:999px;
+      background:rgba(10,15,20,0.78); border:1px solid rgba(36,49,66,0.8);
+      font-weight:900;
+    }
+    .hint { font-size:12px; opacity:0.9; line-height:1.35; white-space:pre-wrap; }
+    label { display:flex; justify-content:space-between; gap:10px; font-size:12px; opacity:0.95; }
+    input[type="range"]{ width: 55%; }
+  </style>
 </head>
+
 <body>
-    <div class="container">
-        <div id="status-box">
-            <span id="main-msg" style="color:yellow">카메라 켜는 중...</span>
-            <span id="debug-msg">잠시만 기다려주세요</span>
-        </div>
-        
-        <video id="input_video" playsinline></video>
-        <canvas id="output_canvas"></canvas>
+<div class="wrap">
+  <div class="topbar">
+    <div class="pill">Open Mouth View · Contactless Guide</div>
+    <div style="display:flex; gap:8px;">
+      <button id="flipBtn" class="btn btn2">전/후면 전환</button>
+      <button id="startBtn" class="btn">카메라 시작</button>
     </div>
+  </div>
 
-    <script type="module">
-        const videoElement = document.getElementById('input_video');
-        const canvasElement = document.getElementById('output_canvas');
-        const ctx = canvasElement.getContext('2d');
-        const mainMsg = document.getElementById('main-msg');
-        const debugMsg = document.getElementById('debug-msg');
+  <div class="main">
+    <video id="video" playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    <div class="guide"><span id="guideText">카메라 시작을 눌러주세요</span></div>
 
-        function onResults(results) {
-            // [중요] 그림판 크기를 현재 화면 크기에 딱 맞춤 (매 프레임 확인)
-            canvasElement.width = window.innerWidth;
-            canvasElement.height = window.innerHeight;
+    <div class="hud">
+      <div class="card">
+        <div class="row">
+          <div class="kpi"><span>MOR</span><b id="morVal">-</b></div>
+          <div class="kpi"><span>Pitch(≈)</span><b id="pitchVal">-</b></div>
+          <div class="kpi"><span>Yaw(≈)</span><b id="yawVal">-</b></div>
+          <div class="kpi"><span class="status" id="statusText">대기</span></div>
+        </div>
+        <div class="hint" id="hintText">
+MOR = (윗/아랫입술 거리) / (양 눈 사이 거리) → 얼굴 크기 보정 입벌림 지표
+Pitch/Yaw는 근사 가이드(정밀 각도는 Head Pose(PnP)로 업그레이드 권장)
+        </div>
+      </div>
 
-            // 1. 그림판을 깨끗이 지움 (투명하게)
-            ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      <div class="card">
+        <label>입벌림 임계치(MOR)
+          <input id="morTh" type="range" min="0.02" max="0.20" step="0.005" value="0.07" />
+          <span id="morThVal">0.07</span>
+        </label>
+        <label>Yaw 허용(≈)
+          <input id="yawTh" type="range" min="0.00" max="0.20" step="0.005" value="0.06" />
+          <span id="yawThVal">0.06</span>
+        </label>
+        <label>Pitch 목표(≈)
+          <input id="pitchTarget" type="range" min="-0.20" max="0.20" step="0.01" value="0.00" />
+          <span id="pitchTargetVal">0.00</span>
+        </label>
+        <div class="hint" id="dbgText">debug: -</div>
+      </div>
+    </div>
+  </div>
+</div>
 
-            // 2. 비디오는 그리지 않음! (뒤에 있는 video 태그가 보여줌)
-            // 이렇게 해야 선이 비디오 뒤로 숨는 문제를 원천 봉쇄함.
+<!-- ✅ CDN 금지: 로컬 파일 사용 -->
+<script src="./mediapipe/face_mesh/face_mesh.js"></script>
 
-            // 3. 얼굴 데이터가 있으면 점 찍기
-            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-                const landmarks = results.multiFaceLandmarks[0];
+<script>
+  // ===== UI =====
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
 
-                // 좌표 변환 함수 (0~1 소수를 화면 픽셀 위치로 변환)
-                const toX = (val) => val * canvasElement.width;
-                const toY = (val) => val * canvasElement.height;
+  const startBtn = document.getElementById('startBtn');
+  const flipBtn = document.getElementById('flipBtn');
 
-                // --- 데이터 계산 ---
-                // 입 거리 (상순 13 - 하순 14)
-                const mouthDist = Math.hypot(landmarks[13].x - landmarks[14].x, landmarks[13].y - landmarks[14].y);
-                // 얼굴 길이 (이마 10 - 턱 152)
-                const faceHeight = Math.hypot(landmarks[10].x - landmarks[152].x, landmarks[10].y - landmarks[152].y);
-                // 비율 계산
-                const ratio = (mouthDist / faceHeight) * 100;
-                
-                // 회전 계산 (코 1 - 양쪽 귀 234, 454)
-                const leftEarDist = Math.hypot(landmarks[1].x - landmarks[234].x, landmarks[1].y - landmarks[234].y);
-                const rightEarDist = Math.hypot(landmarks[1].x - landmarks[454].x, landmarks[1].y - landmarks[454].y);
-                const yaw = leftEarDist / rightEarDist;
+  const guideText = document.getElementById('guideText');
+  const statusText = document.getElementById('statusText');
+  const dbgText = document.getElementById('dbgText');
 
-                // --- UI 로직 ---
-                const isMouthOpen = ratio > 7.0;
-                const isCentered = yaw > 0.6 && yaw < 1.4;
-                const isReady = isMouthOpen && isCentered;
+  const morVal = document.getElementById('morVal');
+  const pitchVal = document.getElementById('pitchVal');
+  const yawVal = document.getElementById('yawVal');
+  const hintText = document.getElementById('hintText');
 
-                debugMsg.innerText = `입크기: ${ratio.toFixed(1)}% | 회전: ${yaw.toFixed(2)}`;
+  const morTh = document.getElementById('morTh');
+  const yawTh = document.getElementById('yawTh');
+  const pitchTarget = document.getElementById('pitchTarget');
+  const morThVal = document.getElementById('morThVal');
+  const yawThVal = document.getElementById('yawThVal');
+  const pitchTargetVal = document.getElementById('pitchTargetVal');
 
-                let color = '#FF0055'; // 기본 빨강
+  morTh.oninput = () => morThVal.textContent = (+morTh.value).toFixed(3);
+  yawTh.oninput = () => yawThVal.textContent = (+yawTh.value).toFixed(3);
+  pitchTarget.oninput = () => pitchTargetVal.textContent = (+pitchTarget.value).toFixed(2);
+  morTh.oninput(); yawTh.oninput(); pitchTarget.oninput();
 
-                if (isReady) {
-                    mainMsg.innerText = "촬영 가능 (READY)";
-                    mainMsg.style.color = "#00FF00";
-                    color = "#00FF00"; // 성공 시 초록
-                } else {
-                    mainMsg.style.color = "#FF0055";
-                    if(!isMouthOpen) mainMsg.innerText = "입을 크게 벌리세요";
-                    else mainMsg.innerText = "정면을 보세요";
-                }
+  function setStatus(text, level){
+    statusText.textContent = text;
+    statusText.className = "status " + (level||"");
+  }
 
-                // --- [확실한 그리기] 선 두껍게, 점 크게 ---
-                ctx.lineWidth = 3;
-                ctx.strokeStyle = color;
-                ctx.fillStyle = color;
+  // ===== Error surfacing =====
+  window.onerror = (m, s, l) => {
+    setStatus("JS 에러", "bad");
+    guideText.textContent = "JS ERROR: " + m;
+    dbgText.textContent = "debug: line " + l;
+  };
+  window.onunhandledrejection = (ev) => {
+    const msg = ev?.reason?.message || String(ev?.reason || ev);
+    setStatus("실행 에러", "bad");
+    guideText.textContent = "PROMISE ERROR: " + msg;
+  };
 
-                // 4. 얼굴 십자선 그리기 (무조건 보여야 함)
-                ctx.beginPath();
-                // 세로선 (이마 -> 턱)
-                ctx.moveTo(toX(landmarks[10].x), toY(landmarks[10].y));
-                ctx.lineTo(toX(landmarks[152].x), toY(landmarks[152].y));
-                // 가로선 (왼눈 -> 오른눈)
-                ctx.moveTo(toX(landmarks[33].x), toY(landmarks[33].y));
-                ctx.lineTo(toX(landmarks[263].x), toY(landmarks[263].y));
-                ctx.stroke();
+  // ===== State =====
+  let stream = null;
+  let facingMode = 'user';
+  let running = false;
+  let faceMesh = null;
 
-                // 5. 코 끝에 왕점 찍기
-                ctx.beginPath();
-                ctx.arc(toX(landmarks[1].x), toY(landmarks[1].y), 8, 0, 2 * Math.PI);
-                ctx.fill();
+  function stopStream(){
+    if (stream){
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+  }
 
-                // 6. 입술 윤곽 점 찍기 (확인용)
-                [13, 14, 61, 291].forEach(idx => {
-                    ctx.beginPath();
-                    ctx.arc(toX(landmarks[idx].x), toY(landmarks[idx].y), 4, 0, 2 * Math.PI);
-                    ctx.fill();
-                });
+  function ensureMediapipeLocal(){
+    if (!window.FaceMesh || !window.FaceMesh.FaceMesh){
+      setStatus("라이브러리 로드 실패", "bad");
+      guideText.textContent = "FaceMesh=undefined (로컬 파일 경로/업로드 확인)";
+      dbgText.textContent =
+        "debug: 필요 파일\n" +
+        "1) mediapipe/face_mesh/face_mesh.js\n" +
+        "2) mediapipe/face_mesh/face_mesh_solution_packed_assets.data\n" +
+        "3) mediapipe/face_mesh/face_mesh.binarypb";
+      throw new Error("FaceMesh local library not loaded");
+    }
+  }
 
-            } else {
-                mainMsg.innerText = "얼굴 인식 중...";
-                mainMsg.style.color = "yellow";
-                debugMsg.innerText = "카메라를 봐주세요";
-            }
+  // ===== Metrics =====
+  const dist2D = (a,b,w,h) => {
+    const ax=a.x*w, ay=a.y*h, bx=b.x*w, by=b.y*h;
+    return Math.hypot(ax-bx, ay-by);
+  };
+
+  function computeMetrics(lm, w, h){
+    // Common landmark ids
+    // Lips: 13,14 / Eyes outer: 33,263 / Nose:1 / Forehead:10
+    const L = lm[33], R = lm[263];
+    const U = lm[13], D = lm[14];
+    const N = lm[1],  F = lm[10];
+
+    const eyeDist = dist2D(L,R,w,h);
+    const mouthOpen = dist2D(U,D,w,h);
+    const MOR = mouthOpen / Math.max(eyeDist, 1e-6);
+
+    // Yaw heuristic: z depth diff
+    // Note: sign differs with mirror; we only use abs for threshold
+    const yaw = (L.z - R.z);
+
+    // Pitch heuristic: nose vs forehead relative y
+    const pitch = (N.y - F.y);
+
+    return { MOR, yaw, pitch, eyeDist, mouthOpen };
+  }
+
+  function decideGuide(m){
+    const morThreshold = +morTh.value;
+    const yawThreshold = +yawTh.value;
+    const targetPitch = +pitchTarget.value;
+
+    const morOK = m.MOR >= morThreshold;
+    const yawOK = Math.abs(m.yaw) <= yawThreshold;
+
+    const pitchErr = m.pitch - targetPitch;
+    const pitchOK = Math.abs(pitchErr) <= 0.03;
+
+    let msgs = [];
+    if (!morOK) msgs.push("입을 더 벌려주세요");
+    if (!yawOK) msgs.push("고개 회전(좌/우) 줄이세요");
+    if (!pitchOK) msgs.push(pitchErr > 0 ? "턱을 조금 올려주세요" : "턱을 조금 내려주세요");
+
+    if (msgs.length === 0) return { text:"OK · 자세 유지", level:"ok", state:"정렬 양호" };
+    return { text: msgs.join(" · "), level: (msgs.length===1 ? "warn" : "bad"), state: (msgs.length===1 ? "조정 필요" : "재정렬") };
+  }
+
+  // ===== Core =====
+  async function startCamera(){
+    setStatus("초기화…", "warn");
+    guideText.textContent = "카메라 요청 중…(권한 허용)";
+    dbgText.textContent = "debug: starting…";
+    morVal.textContent = pitchVal.textContent = yawVal.textContent = "-";
+
+    stopStream();
+    running = false;
+
+    ensureMediapipeLocal();
+
+    // Camera constraints
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+
+    try{
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch(e){
+      // fallback for picky devices
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
+      } catch(e2){
+        setStatus("카메라 실패", "bad");
+        guideText.textContent = `카메라 실패: ${e2.name}`;
+        dbgText.textContent = `debug: ${e2.name} / ${e2.message}`;
+        return;
+      }
+    }
+
+    video.srcObject = stream;
+
+    try{
+      await video.play();
+    } catch(e){
+      setStatus("재생 실패", "bad");
+      guideText.textContent = `video.play() 실패: ${e.name}`;
+      dbgText.textContent = `debug: ${e.message}`;
+      return;
+    }
+
+    // FaceMesh init (LOCAL locateFile!)
+    faceMesh = new FaceMesh.FaceMesh({
+      locateFile: (file) => `./mediapipe/face_mesh/${file}`
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+
+    faceMesh.onResults((results) => {
+      const w = canvas.width = video.videoWidth || 1280;
+      const h = canvas.height = video.videoHeight || 720;
+
+      ctx.save();
+      ctx.clearRect(0,0,w,h);
+
+      // Mirror front cam
+      if (facingMode === 'user') { ctx.translate(w,0); ctx.scale(-1,1); }
+
+      ctx.drawImage(results.image, 0, 0, w, h);
+
+      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length){
+        const lm = results.multiFaceLandmarks[0];
+
+        // draw key points + lip line
+        const ids = [13,14,33,263,1,10];
+        ctx.fillStyle = "rgba(0,255,160,0.92)";
+        for (const id of ids){
+          const p = lm[id];
+          ctx.beginPath();
+          ctx.arc(p.x*w, p.y*h, 4, 0, Math.PI*2);
+          ctx.fill();
         }
+        const U = lm[13], D = lm[14];
+        ctx.strokeStyle = "rgba(0,255,160,0.92)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(U.x*w, U.y*h);
+        ctx.lineTo(D.x*w, D.y*h);
+        ctx.stroke();
 
-        const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
-        faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-        faceMesh.onResults(onResults);
+        const m = computeMetrics(lm, w, h);
+        const g = decideGuide(m);
 
-        const camera = new Camera(videoElement, {
-            onFrame: async () => { await faceMesh.send({image: videoElement}); },
-            width: 1280, height: 720
-        });
-        camera.start();
-    </script>
+        morVal.textContent = m.MOR.toFixed(3);
+        pitchVal.textContent = m.pitch.toFixed(3);
+        yawVal.textContent = m.yaw.toFixed(3);
+
+        guideText.textContent = g.text;
+        setStatus(g.state, g.level);
+
+        dbgText.textContent = `debug: facing=${facingMode}, eye=${Math.round(m.eyeDist)}px, mouth=${Math.round(m.mouthOpen)}px`;
+        hintText.textContent =
+          `MOR=${m.MOR.toFixed(3)} (입벌림=${Math.round(m.mouthOpen)}px / 눈사이=${Math.round(m.eyeDist)}px)\n` +
+          `Yaw≈${m.yaw.toFixed(3)} (abs<=${(+yawTh.value).toFixed(3)}) · Pitch≈${m.pitch.toFixed(3)} (target=${(+pitchTarget.value).toFixed(2)})`;
+      } else {
+        guideText.textContent = "얼굴을 화면 중앙에 맞춰주세요";
+        setStatus("얼굴 탐지", "warn");
+        dbgText.textContent = "debug: no face";
+        morVal.textContent = pitchVal.textContent = yawVal.textContent = "-";
+      }
+
+      ctx.restore();
+    });
+
+    running = true;
+    setStatus("추적 준비", "ok");
+    guideText.textContent = "추적 시작…";
+    dbgText.textContent = `debug: protocol=${location.protocol}`;
+    loop();
+  }
+
+  async function loop(){
+    if (!running) return;
+    if (!video.videoWidth){
+      requestAnimationFrame(loop);
+      return;
+    }
+    try{
+      await faceMesh.send({ image: video });
+    } catch(e){
+      setStatus("추적 실패", "bad");
+      guideText.textContent = `FaceMesh 실패: ${e.name}`;
+      dbgText.textContent = `debug: ${e.message}`;
+      running = false;
+      return;
+    }
+    requestAnimationFrame(loop);
+  }
+
+  // ===== Buttons =====
+  startBtn.onclick = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      setStatus("지원 안됨", "bad");
+      guideText.textContent = "getUserMedia 미지원 브라우저입니다. Chrome으로 열어주세요.";
+      dbgText.textContent = "debug: no getUserMedia";
+      return;
+    }
+    await startCamera();
+  };
+
+  flipBtn.onclick = async () => {
+    facingMode = (facingMode === 'user') ? 'environment' : 'user';
+    await startCamera();
+  };
+
+  // init
+  dbgText.textContent = `debug: protocol=${location.protocol}`;
+</script>
 </body>
 </html>
+
